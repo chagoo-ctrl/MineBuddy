@@ -1,6 +1,7 @@
 package com.minebuddy.command;
 
 import com.minebuddy.test.GatherTest;
+import com.minebuddy.test.KillSheepTest;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -14,7 +15,6 @@ import net.minecraft.text.Text;
  * 命令注册类
  */
 public class CommandRegistry implements ClientCommandRegistrationCallback {
-
     public static void register() {
         ClientCommandRegistrationCallback.EVENT.register(new CommandRegistry());
     }
@@ -22,7 +22,6 @@ public class CommandRegistry implements ClientCommandRegistrationCallback {
     @Override
     public void register(CommandDispatcher<FabricClientCommandSource> dispatcher, CommandRegistryAccess registryAccess) {
         // 注册 /testget 命令：/testget <数量> <物品ID>
-        // 命名格式：test + Get + 数量 + 物品ID，对应方法testGet(数量, 物品ID)
         dispatcher.register(ClientCommandManager.literal("testget")
                 .then(ClientCommandManager.argument("count", IntegerArgumentType.integer(1, 64))
                         .then(ClientCommandManager.argument("itemId", StringArgumentType.string())
@@ -49,6 +48,27 @@ public class CommandRegistry implements ClientCommandRegistrationCallback {
                             "/testget 20 stone - 收集20个石头\n" +
                             "/testget 5 dirt - 收集5个泥土\n" +
                             "/testget 3 iron_ore - 收集3个铁矿石"));
+                    return 1;
+                })
+        );
+
+        // 注册 /killsheep 命令：/killsheep [数量]，默认杀1只
+        dispatcher.register(ClientCommandManager.literal("killsheep")
+                .then(ClientCommandManager.argument("count", IntegerArgumentType.integer(1, 64))
+                        .executes(context -> {
+                            int count = IntegerArgumentType.getInteger(context, "count");
+                            KillSheepTest.getInstance().startKillSheep(count);
+                            return 1;
+                        })
+                )
+                .then(ClientCommandManager.literal("stop")
+                        .executes(context -> {
+                            KillSheepTest.getInstance().stop();
+                            return 1;
+                        })
+                )
+                .executes(context -> {
+                    KillSheepTest.getInstance().startKillSheep(1);
                     return 1;
                 })
         );

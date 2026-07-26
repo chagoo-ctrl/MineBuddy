@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "minebuddy",
-  "version": "0.1.0",
+  "version": "0.0.2",
   "name": "MineBuddy",
   "description": "Minecraft AI陪玩 - 通用客户端智能体框架",
   "authors": ["MineBuddy Team"],

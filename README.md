@@ -1,5 +1,5 @@
 # MineBuddy - Minecraft 通用客户端AI陪玩机器人
-> 当前版本：v0.0.1 | 神经符号架构 | 严格生存模式 | 零作弊
+> 当前版本：v0.0.2 | 神经符号架构 | 严格生存模式 | 零作弊
 ---
 ## 🎯 项目定位
 MineBuddy 是一个**通用游戏客户端智能体框架**，不仅仅支持Minecraft，未来可扩展支持星露谷物语、泰拉瑞亚等任意游戏。
@@ -50,7 +50,7 @@ MineBuddy 是一个**通用游戏客户端智能体框架**，不仅仅支持Min
 ┌───────────────────────────┼─────────────────────────────┐
 │                     适配层 (游戏相关)                    │
 │  ┌─────────────────────────┴─────────────────────────┐  │
-│  │                     感知层 (眼睛) v0.0.1-perception│
+│  │                     感知层 (眼睛) v0.0.2-perception│
 │  │  渲染Hook → 可见方块/实体/掉落物/自身/世界状态     │  │
 │  └───────────────────────────────────────────────────┘  │
 │  ┌───────────────────────────────────────────────────┐  │
@@ -62,7 +62,7 @@ MineBuddy 是一个**通用游戏客户端智能体框架**，不仅仅支持Min
                     Minecraft 客户端
 ```
 ---
-## 👁️ 感知层 v0.0.1-perception
+## 👁️ 感知层 v0.0.2-perception
 感知层通过Hook客户端渲染管线实现，**只收集正在渲染的内容**，和玩家屏幕上看到的100%一致：
 - ✅ 自动面剔除：6个面都被挡住的方块不会被感知
 - ✅ 自动视锥体裁剪：屏幕外的内容不会被感知
@@ -70,6 +70,7 @@ MineBuddy 是一个**通用游戏客户端智能体框架**，不仅仅支持Min
 - ✅ 零额外性能开销：本来就要渲染，只是顺手记录数据
 - ✅ 自动去重：同一方块多面渲染只记录一次
 - ✅ 线程安全：渲染线程写，逻辑线程读，无锁竞争
+- ✅ 支持1.21.3新组件API，正确收集附魔、药水效果等数据
 ### 感知快照结构 `PerceptionSnapshot`
 每帧渲染完成后生成一次完整快照。
 ```java
@@ -101,6 +102,7 @@ public record PerceptionSnapshot(
 | air | int | 氧气值（水下300，溺水时减少） |
 | experienceLevel | int | 经验等级 |
 | experienceProgress | float | 当前等级经验进度 0~1 |
+| effects | List<StatusEffectInfo> | 当前药水/状态效果列表，包含效果ID、等级、剩余时间 |
 ---
 #### 2. 手持状态 `HandState`
 | 字段 | 类型 | 说明 |
@@ -135,6 +137,7 @@ public record PerceptionSnapshot(
 | x, y, z | int | 方块坐标 |
 | distance | double | 与玩家眼睛的距离（格） |
 | state | String | 方块状态（朝向、含水、成熟度等） |
+| facing | String | 方块朝向：north/south/east/west/up/down，无朝向为null |
 | visibleFaces | int | 可见面数量 1~6 |
 ---
 #### 6. 可见实体 `VisibleEntity`
@@ -145,10 +148,15 @@ public record PerceptionSnapshot(
 | type | String | 实体类型ID，如 `minecraft:zombie` |
 | x, y, z | double | 实体坐标 |
 | distance | double | 与玩家眼睛的距离（格） |
+| flatDistance | double | 与玩家脚对脚的水平直线距离（格） |
 | hp, maxHp | float | 当前生命/最大生命 |
 | isHostile | boolean | 是否敌对生物 |
 | isBaby | boolean | 是否幼年个体 |
 | yaw, pitch | float | 实体朝向 |
+| armor | List<ItemInfo> | 实体装备：头、胸、腿、脚4个槽位 |
+| mainHand | ItemInfo | 实体主手物品 |
+| offHand | ItemInfo | 实体副手物品 |
+| effects | List<StatusEffectInfo> | 实体当前药水/状态效果列表 |
 ---
 #### 7. 可见掉落物 `VisibleItem`
 **只有正在渲染的掉落物才会出现在列表中**
@@ -172,8 +180,6 @@ public record PerceptionSnapshot(
 | lightLevel | int | 玩家位置方块光照等级 0~15 |
 | dimension | String | 维度：`minecraft:overworld`/`minecraft:the_nether`/`minecraft:the_end` |
 | difficulty | String | 难度：`peaceful`/`easy`/`normal`/`hard` |
-| moonPhase | int | 月相 0~7（影响史莱姆生成） |
-| canSeeSky | boolean | 玩家头顶是否能看到天空（判断是否在户外） |
 ---
 #### 9. 游戏状态 `GameState`
 | 字段 | 类型 | 说明 |
@@ -214,6 +220,7 @@ GameRenderer.renderWorld 结束
 | 🎯 视角控制 | `lookAt(yaw, pitch)` | 直接瞬转到指定角度 |
 | | `lookAt(BlockPos)` | 直接看向指定方块中心 |
 | | `lookAt(Entity)` | 直接看向指定实体 |
+| | `lookAt(Vec3d)` | 直接看向任意坐标点 |
 | | `lookAtItem(ItemEntity)` | 看向掉落物 |
 | | `turn(deltaYaw, deltaPitch)` | 相对转动视角 |
 | 🚶 移动控制 | `setMovement(forward, strafe)` | 设置移动输入：-1=后/右，0=停，1=前/左 |
@@ -230,6 +237,7 @@ GameRenderer.renderWorld 结束
 | | `placeBlock(BlockPos)` | 放置方块（默认朝上放） |
 | | `interactBlock(BlockPos, Direction)` | 右键交互方块（开门、开箱子等） |
 | ⚔️ 战斗交互 | `attackEntity(Entity)` | 攻击指定实体，自动对准 |
+| | `attackEntity(int entityId)` | 根据实体ID攻击目标，自动对准 |
 | ✋ 物品使用 | `useItem()` | 使用主手物品（右键） |
 | | `useOffhandItem()` | 使用副手物品 |
 | 🎒 背包操作 | `selectHotbarSlot(int)` | 切换到指定快捷栏槽位（0~8） |
@@ -278,6 +286,23 @@ GameRenderer.renderWorld 结束
 3. **挖目标**：对准目标开始挖掘，10秒超时保护，挖不动自动换目标
 4. **等掉落**：等1秒让掉落物吸过来，计数，收集够数量自动停止
 聊天栏会实时输出进度信息。
+
+---
+
+### 杀羊测试 v0.0.1-test
+简单战斗测试，自动找最近的羊并击杀，验证实体感知、移动、攻击功能。
+#### 测试命令
+| 命令 | 说明 |
+|------|------|
+| `/killsheep [数量]` | 自动击杀指定数量的羊，默认1只 |
+| `/killsheep stop` | 停止当前杀羊任务 |
+#### 测试逻辑
+简单状态机实现：
+1. **找目标**：24格内找最近的羊（类型包含`sheep`），找不到自动转头探索，转5秒没找到向前走
+2. **移动接近**：自动看向羊，距离>8格自动疾跑，1格障碍自动跳跃，撞墙超过1秒右转15度绕开，卡住超过1.5秒跳+后退脱困
+3. **攻击**：距离<3格进入攻击状态，每10tick（0.5秒）攻击一次，等待攻击冷却，实时显示羊剩余血量
+4. **捡掉落**：羊死亡后等待1.5秒让掉落物吸过来，计数，杀够数量自动停止
+聊天栏会实时输出目标距离、血量、攻击进度。
 ---
 ## 🚀 构建与运行
 ### 环境要求
@@ -304,9 +329,32 @@ export PATH=$JAVA_HOME/bin:$PATH
 ```bash
 ./gradlew build
 ```
-输出文件在 `build/libs/minebuddy-0.0.1.jar`
+输出文件在 `build/libs/minebuddy-0.0.2.jar`
 ---
 ## 📋 版本历史
+### v0.0.2 (2026-07-26)
+#### 0.0.2-perception 感知层升级
+- ✅ 新增StatusEffectInfo结构，支持收集玩家和生物的药水/状态效果（ID、等级、剩余时间）
+- ✅ SelfState新增effects字段，返回玩家当前所有buff/debuff
+- ✅ VisibleBlock新增facing字段，解析方块朝向（north/south/east/west/up/down）
+- ✅ VisibleEntity新增flatDistance字段，返回实体与玩家脚对脚的水平直线距离
+- ✅ VisibleEntity新增armor字段，返回实体4个盔甲槽的装备信息
+- ✅ VisibleEntity新增mainHand/offHand字段，返回实体主副手物品
+- ✅ VisibleEntity新增effects字段，返回实体当前药水/状态效果
+- ✅ 修复1.21.3组件API，ItemInfo正确收集附魔列表和等级，不再返回空Map
+- ✅ WorldState精简字段，移除月相和是否露天字段，保留核心时间/昼夜/天气/光照/维度/难度
+- ✅ 适配1.21.3新API，状态效果通过getEffectType().getIdAsString()直接获取ID
+#### 0.0.1-action 动作层补充
+- ✅ 新增lookAt(Vec3d pos)方法，支持看向任意3D坐标点
+- ✅ 新增attackEntity(int entityId)重载方法，支持通过实体ID直接攻击目标
+#### 0.0.1-test 杀羊测试
+- ✅ 新增KillSheepTest杀羊测试，简单状态机实现自动找羊、接近、攻击、捡掉落
+- ✅ 支持/killsheep [数量]命令，默认杀1只，支持/killsheep stop停止
+- ✅ 复用通用收集测试的寻路避障逻辑：撞墙转向、卡住脱困、自动疾跑、自动跳跃
+- ✅ 攻击间隔10tick（0.5秒），等待攻击冷却，实时显示羊剩余血量
+- ✅ 羊死亡后等待1.5秒自动拾取掉落物，杀够数量自动停止
+- ✅ 运行时自动关闭每秒统计输出，避免聊天栏刷屏
+
 ### v0.0.1 (2026-07-26)
 #### 0.0.1-perception 感知层
 - ✅ 完成感知层核心架构

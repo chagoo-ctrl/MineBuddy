@@ -109,6 +109,19 @@ public class ActionController {
     }
 
     /**
+     * 看向任意坐标点
+     */
+    public CompletableFuture<Void> lookAt(Vec3d pos) {
+        return runOnMainThread(() -> {
+            ClientPlayerEntity player = client.player;
+            if (player == null) return;
+            Vec3d eyePos = player.getEyePos();
+            float[] angles = calculateLookAt(eyePos, pos);
+            lookAt(angles[0], angles[1]);
+        });
+    }
+
+    /**
      * 相对转动视角
      */
     public CompletableFuture<Void> turn(float deltaYaw, float deltaPitch) {
@@ -320,6 +333,20 @@ public class ActionController {
             lookAt(entity).join();
             interactionManager.attackEntity(player, entity);
             player.swingHand(Hand.MAIN_HAND);
+        });
+    }
+
+    /**
+     * 根据实体ID攻击实体
+     */
+    public CompletableFuture<Void> attackEntity(int entityId) {
+        return runOnMainThread(() -> {
+            ClientPlayerEntity player = client.player;
+            if (player == null || client.world == null) return;
+            Entity entity = client.world.getEntityById(entityId);
+            if (entity != null) {
+                attackEntity(entity);
+            }
         });
     }
 

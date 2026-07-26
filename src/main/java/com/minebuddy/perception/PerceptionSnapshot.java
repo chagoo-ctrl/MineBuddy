@@ -1,8 +1,5 @@
 package com.minebuddy.perception;
 
-import net.minecraft.item.ItemStack;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Vec3d;
 import java.util.List;
 import java.util.Map;
 
@@ -29,6 +26,15 @@ public record PerceptionSnapshot(
         GameState game
 ) {
     /**
+     * 药水效果/Buff信息
+     */
+    public record StatusEffectInfo(
+            String id,          // 效果ID，如minecraft:speed
+            int amplifier,      // 等级（0=I级，1=II级）
+            int duration        // 剩余tick数
+    ) {}
+
+    /**
      * 自身状态
      */
     public record SelfState(
@@ -43,7 +49,8 @@ public record PerceptionSnapshot(
             boolean isBurning,
             int air,
             int experienceLevel,
-            float experienceProgress
+            float experienceProgress,
+            List<StatusEffectInfo> effects // 当前buff/药水效果
     ) {}
 
     /**
@@ -72,7 +79,7 @@ public record PerceptionSnapshot(
     public record InventoryState(
             List<ItemInfo> hotbar,    // 快捷栏 9格
             List<ItemInfo> main,      // 主背包 27格
-            List<ItemInfo> armor,     // 盔甲 4格
+            List<ItemInfo> armor,     // 盔甲 4格（头、胸、腿、脚）
             List<ItemInfo> offhand,   // 副手 1格
             ItemInfo cursorItem       // 鼠标拖动的物品
     ) {}
@@ -83,8 +90,9 @@ public record PerceptionSnapshot(
     public record VisibleBlock(
             String id,
             int x, int y, int z,
-            double distance,
-            String state,           // 方块状态JSON
+            double distance,        // 与玩家眼睛的距离
+            String state,           // 方块状态字符串
+            String facing,          // 方块朝向：north/south/east/west/up/down，无朝向则为null
             int visibleFaces        // 可见面数量
     ) {}
 
@@ -95,11 +103,16 @@ public record PerceptionSnapshot(
             int entityId,
             String type,
             double x, double y, double z,
-            double distance,
+            double distance,        // 与玩家眼睛的距离
+            double flatDistance,    // 与玩家的水平直线距离（脚对脚）
             float hp, float maxHp,
             boolean isHostile,
             boolean isBaby,
-            float yaw, float pitch
+            float yaw, float pitch,
+            List<ItemInfo> armor,   // 实体装备：头、胸、腿、脚
+            ItemInfo mainHand,      // 实体主手物品
+            ItemInfo offHand,       // 实体副手物品
+            List<StatusEffectInfo> effects // 实体当前buff/药水效果
     ) {}
 
     /**
@@ -124,10 +137,8 @@ public record PerceptionSnapshot(
             boolean isNight,
             String weather,         // CLEAR/RAIN/THUNDER
             int lightLevel,
-            String dimension,       // OVERWORLD/NETHER/END
-            String difficulty,
-            int moonPhase,
-            boolean canSeeSky
+            String dimension,       // 维度ID
+            String difficulty       // 难度名称
     ) {}
 
     /**

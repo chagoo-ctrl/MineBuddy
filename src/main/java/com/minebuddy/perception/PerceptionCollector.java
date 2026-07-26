@@ -3,19 +3,22 @@ package com.minebuddy.perception;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.Entity;
+import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.entity.ItemEntity;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.effect.StatusEffectInstance;
 import net.minecraft.entity.mob.Monster;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
-import net.minecraft.util.hit.HitResult;
+import net.minecraft.state.property.Properties;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.LightType;
-import net.minecraft.world.World;
-import java.util.*;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * 感知收集器 - 每帧收集所有渲染的方块/实体，生成感知快照
@@ -60,8 +63,16 @@ public class PerceptionCollector {
 
         Vec3d eyePos = client.player.getEyePos();
         double distance = Math.sqrt(pos.getSquaredDistance(eyePos));
-
         String blockId = Registries.BLOCK.getId(state.getBlock()).toString();
+
+        // 解析方块朝向
+        String facing = null;
+        if (state.contains(Properties.FACING)) {
+            facing = state.get(Properties.FACING).getName();
+        } else if (state.contains(Properties.HORIZONTAL_FACING)) {
+            facing = state.get(Properties.HORIZONTAL_FACING).getName();
+        }
+
         // 简单计算可见面数量（后面可以优化）
         int visibleFaces = 1;
 
@@ -70,6 +81,7 @@ public class PerceptionCollector {
                 pos.getX(), pos.getY(), pos.getZ(),
                 Math.round(distance * 100.0) / 100.0,
                 state.toString(),
+                facing,
                 visibleFaces
         ));
     }
@@ -84,7 +96,9 @@ public class PerceptionCollector {
         if (entity == client.player) return; // 跳过自己
 
         Vec3d eyePos = client.player.getEyePos();
+        Vec3d playerPos = client.player.getPos();
         double distance = Math.sqrt(entity.squaredDistanceTo(eyePos));
+        double flatDistance = Math.sqrt(entity.squaredDistanceTo(playerPos));
         String entityType = Registries.ENTITY_TYPE.getId(entity.getType()).toString();
 
         // 掉落物单独处理
@@ -109,11 +123,30 @@ public class PerceptionCollector {
         float hp = 0, maxHp = 0;
         boolean isHostile = entity instanceof Monster;
         boolean isBaby = false;
+        List<PerceptionSnapshot.ItemInfo> armor = List.of(
+                emptyItem(), emptyItem(), emptyItem(), emptyItem()
+        );
+        PerceptionSnapshot.ItemInfo mainHand = emptyItem();
+        PerceptionSnapshot.ItemInfo offHand = emptyItem();
+        List<PerceptionSnapshot.StatusEffectInfo> effects = List.of();
 
         if (entity instanceof LivingEntity living) {
             hp = living.getHealth();
             maxHp = living.getMaxHealth();
             isBaby = living.isBaby();
+
+            // 收集装备
+            armor = List.of(
+                    getItemInfo(living.getEquippedStack(EquipmentSlot.HEAD)),
+                    getItemInfo(living.getEquippedStack(EquipmentSlot.CHEST)),
+                    getItemInfo(living.getEquippedStack(EquipmentSlot.LEGS)),
+                    getItemInfo(living.getEquippedStack(EquipmentSlot.FEET))
+            );
+            mainHand = getItemInfo(living.getEquippedStack(EquipmentSlot.MAINHAND));
+            offHand = getItemInfo(living.getEquippedStack(EquipmentSlot.OFFHAND));
+
+            // 收集药水效果
+            effects = getEffects(living);
         }
 
         entityBuffer.put(entity.getId(), new PerceptionSnapshot.VisibleEntity(
@@ -121,10 +154,15 @@ public class PerceptionCollector {
                 entityType,
                 entity.getX(), entity.getY(), entity.getZ(),
                 Math.round(distance * 100.0) / 100.0,
+                Math.round(flatDistance * 100.0) / 100.0,
                 hp, maxHp,
                 isHostile,
                 isBaby,
-                entity.getYaw(), entity.getPitch()
+                entity.getYaw(), entity.getPitch(),
+                armor,
+                mainHand,
+                offHand,
+                effects
         ));
     }
 
@@ -139,9 +177,11 @@ public class PerceptionCollector {
 
         frameCount++;
         long now = System.currentTimeMillis();
+        var player = client.player;
+        var world = client.world;
 
         // 1. 收集自身状态
-        var player = client.player;
+        List<PerceptionSnapshot.StatusEffectInfo> selfEffects = getEffects(player);
         PerceptionSnapshot.SelfState self = new PerceptionSnapshot.SelfState(
                 player.getX(), player.getY(), player.getZ(),
                 player.getYaw(), player.getPitch(),
@@ -155,7 +195,8 @@ public class PerceptionCollector {
                 player.isOnFire(),
                 player.getAir(),
                 player.experienceLevel,
-                player.experienceProgress
+                player.experienceProgress,
+                selfEffects
         );
 
         // 2. 收集手持状态
@@ -168,17 +209,16 @@ public class PerceptionCollector {
         // 3. 收集背包
         List<PerceptionSnapshot.ItemInfo> hotbar = new ArrayList<>();
         List<PerceptionSnapshot.ItemInfo> main = new ArrayList<>();
-        List<PerceptionSnapshot.ItemInfo> armor = new ArrayList<>();
+        List<PerceptionSnapshot.ItemInfo> armorItems = new ArrayList<>();
         for (int i = 0; i < 9; i++) hotbar.add(getItemInfo(player.getInventory().getStack(i)));
         for (int i = 9; i < 36; i++) main.add(getItemInfo(player.getInventory().getStack(i)));
-        for (int i = 0; i < 4; i++) armor.add(getItemInfo(player.getInventory().armor.get(i)));
+        for (int i = 0; i < 4; i++) armorItems.add(getItemInfo(player.getInventory().armor.get(i)));
         var cursor = getItemInfo(player.currentScreenHandler.getCursorStack());
         PerceptionSnapshot.InventoryState inventory = new PerceptionSnapshot.InventoryState(
-                hotbar, main, armor, List.of(offHand), cursor
+                hotbar, main, armorItems, List.of(offHand), cursor
         );
 
         // 4. 收集世界状态
-        var world = client.world;
         BlockPos playerPos = player.getBlockPos();
         long dayTime = world.getTimeOfDay() % 24000;
         String weather = world.isThundering() ? "THUNDER" : world.isRaining() ? "RAIN" : "CLEAR";
@@ -192,9 +232,7 @@ public class PerceptionCollector {
                 weather,
                 light,
                 dimension,
-                world.getDifficulty().getName(),
-                world.getMoonPhase(),
-                world.isSkyVisible(playerPos)
+                world.getDifficulty().getName()
         );
 
         // 5. 收集游戏状态
@@ -242,15 +280,46 @@ public class PerceptionCollector {
      */
     private PerceptionSnapshot.ItemInfo getItemInfo(ItemStack stack) {
         if (stack.isEmpty()) {
-            return new PerceptionSnapshot.ItemInfo("minecraft:air", 0, 0, 0, java.util.Map.of());
+            return emptyItem();
         }
         String id = Registries.ITEM.getId(stack.getItem()).toString();
+        // 收集附魔（1.21.3+ 组件API）
+        Map<String, Integer> enchantments = new java.util.HashMap<>();
+        var enchantmentComponent = stack.getEnchantments();
+        enchantmentComponent.getEnchantments().forEach(entry -> {
+            String enchId = entry.getIdAsString();
+            int level = enchantmentComponent.getLevel(entry);
+            enchantments.put(enchId, level);
+        });
         return new PerceptionSnapshot.ItemInfo(
                 id,
                 stack.getCount(),
                 stack.getDamage(),
                 stack.getMaxDamage(),
-                java.util.Map.of() // 附魔后面再加
+                enchantments
         );
+    }
+
+    /**
+     * 工具方法：空物品
+     */
+    private PerceptionSnapshot.ItemInfo emptyItem() {
+        return new PerceptionSnapshot.ItemInfo("minecraft:air", 0, 0, 0, Map.of());
+    }
+
+    /**
+     * 工具方法：收集生物的药水效果
+     */
+    private List<PerceptionSnapshot.StatusEffectInfo> getEffects(LivingEntity living) {
+        List<PerceptionSnapshot.StatusEffectInfo> effects = new ArrayList<>();
+        for (StatusEffectInstance effect : living.getStatusEffects()) {
+            String effectId = effect.getEffectType().getIdAsString();
+            effects.add(new PerceptionSnapshot.StatusEffectInfo(
+                    effectId,
+                    effect.getAmplifier(),
+                    effect.getDuration()
+            ));
+        }
+        return effects;
     }
 }

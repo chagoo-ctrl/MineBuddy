@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "minebuddy",
+  "version": "0.1.0",
+  "name": "MineBuddy",
+  "description": "Minecraft AI陪玩 - 通用客户端智能体框架",
+  "authors": ["MineBuddy Team"],
+  "contact": {},
+  "license": "MIT",
+  "icon": "assets/minebuddy/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.minebuddy.MineBuddyClient"
+    ]
+  },
+  "mixins": [
+    "minebuddy.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "minecraft": "~1.21.3",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}

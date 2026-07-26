@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "package": "com.minebuddy.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "BlockRenderManagerMixin",
+    "EntityRendererMixin",
+    "GameRendererMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

@@ -1,7 +1,9 @@
 package com.minebuddy.command;
 
-import com.minebuddy.test.MiningTest;
+import com.minebuddy.test.GatherTest;
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
@@ -19,22 +21,34 @@ public class CommandRegistry implements ClientCommandRegistrationCallback {
 
     @Override
     public void register(CommandDispatcher<FabricClientCommandSource> dispatcher, CommandRegistryAccess registryAccess) {
-        // 注册 /testmine 命令
-        dispatcher.register(ClientCommandManager.literal("testmine")
-                .then(ClientCommandManager.literal("start")
-                        .executes(context -> {
-                            MiningTest.getInstance().start();
-                            return 1;
-                        })
+        // 注册 /testget 命令：/testget <数量> <物品ID>
+        // 命名格式：test + Get + 数量 + 物品ID，对应方法testGet(数量, 物品ID)
+        dispatcher.register(ClientCommandManager.literal("testget")
+                .then(ClientCommandManager.argument("count", IntegerArgumentType.integer(1, 64))
+                        .then(ClientCommandManager.argument("itemId", StringArgumentType.string())
+                                .executes(context -> {
+                                    int count = IntegerArgumentType.getInteger(context, "count");
+                                    String itemId = StringArgumentType.getString(context, "itemId");
+                                    GatherTest.getInstance().testGet(count, itemId);
+                                    return 1;
+                                })
+                        )
                 )
                 .then(ClientCommandManager.literal("stop")
                         .executes(context -> {
-                            MiningTest.getInstance().stop();
+                            GatherTest.getInstance().stop();
                             return 1;
                         })
                 )
                 .executes(context -> {
-                    context.getSource().sendFeedback(Text.literal("§e用法：\n/testmine start - 开始自动挖10个木头\n/testmine stop - 停止"));
+                    context.getSource().sendFeedback(Text.literal("§e用法：\n" +
+                            "/testget <数量> <物品ID> - 自动收集指定数量的方块\n" +
+                            "/testget stop - 停止收集\n" +
+                            "示例：\n" +
+                            "/testget 10 log - 收集10个木头\n" +
+                            "/testget 20 stone - 收集20个石头\n" +
+                            "/testget 5 dirt - 收集5个泥土\n" +
+                            "/testget 3 iron_ore - 收集3个铁矿石"));
                     return 1;
                 })
         );

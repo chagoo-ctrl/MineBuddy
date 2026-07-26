@@ -1,22 +1,24 @@
 package com.minebuddy.action;
 
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.client.util.InputUtil;
+import net.minecraft.client.network.ClientPlayerInteractionManager;
 import net.minecraft.entity.Entity;
+import net.minecraft.entity.ItemEntity;
+import net.minecraft.item.ItemStack;
+import net.minecraft.util.Hand;
+import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
-import org.lwjgl.glfw.GLFW;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
 
 /**
- * 原子动作控制器 - 肌肉层
- * 所有操作均模拟真人键鼠输入，和物理按键完全一致，反作弊无法检测
+ * 原子动作控制器 - 肌肉层（高效模式）
+ * 单人/局域网无反作弊环境使用，直接调用游戏API，高效可靠
  * 线程安全：所有游戏操作自动提交到Minecraft主线程执行
  */
 public class ActionController {
@@ -27,10 +29,6 @@ public class ActionController {
     // 动作状态
     private boolean isMining = false;
     private BlockPos miningTarget = null;
-    private float targetYaw = 0;
-    private float targetPitch = 0;
-    private boolean smoothLooking = false;
-    private static final float LOOK_SPEED = 15f; // 每tick最大转动角度，模拟真人鼠标速度
 
     private ActionController() {
         this.client = MinecraftClient.getInstance();
@@ -41,65 +39,79 @@ public class ActionController {
         return INSTANCE;
     }
 
-    // ==================== 基础输入原语（线程安全） ====================
+    // ==================== 工具方法 ====================
 
-    /**
-     * 在主线程执行操作
-     */
     private CompletableFuture<Void> runOnMainThread(Runnable task) {
+        if (client.isOnThread()) {
+            task.run();
+            return CompletableFuture.completedFuture(null);
+        }
         return CompletableFuture.runAsync(task, mainExecutor);
     }
 
     /**
-     * 按下按键
+     * 计算看向目标位置需要的角度
      */
-    public CompletableFuture<Void> pressKey(KeyBinding key) {
+    private float[] calculateLookAt(Vec3d eyePos, Vec3d targetPos) {
+        double dx = targetPos.x - eyePos.x;
+        double dy = targetPos.y - eyePos.y;
+        double dz = targetPos.z - eyePos.z;
+        double dHorizontal = Math.sqrt(dx * dx + dz * dz);
+        float yaw = (float) (MathHelper.atan2(dz, dx) * 180 / Math.PI) - 90f;
+        float pitch = (float) -(MathHelper.atan2(dy, dHorizontal) * 180 / Math.PI);
+        return new float[]{yaw, pitch};
+    }
+
+    // ==================== 视角控制（直接瞬转，高效） ====================
+
+    /**
+     * 直接看向指定角度
+     */
+    public CompletableFuture<Void> lookAt(float yaw, float pitch) {
         return runOnMainThread(() -> {
-            if (!key.isPressed()) {
-                KeyBinding.setKeyPressed(key.getDefaultKey(), true);
-                key.setPressed(true);
-            }
+            ClientPlayerEntity player = client.player;
+            if (player == null) return;
+            player.setYaw(yaw);
+            player.setPitch(MathHelper.clamp(pitch, -90f, 90f));
+            // 同步身体角度
+            player.prevYaw = yaw;
+            player.bodyYaw = yaw;
+            player.headYaw = yaw;
         });
     }
 
     /**
-     * 释放按键
+     * 直接看向指定方块中心
      */
-    public CompletableFuture<Void> releaseKey(KeyBinding key) {
+    public CompletableFuture<Void> lookAt(BlockPos pos) {
         return runOnMainThread(() -> {
-            if (key.isPressed()) {
-                KeyBinding.setKeyPressed(key.getDefaultKey(), false);
-                key.setPressed(false);
-            }
+            ClientPlayerEntity player = client.player;
+            if (player == null) return;
+            Vec3d eyePos = player.getEyePos();
+            Vec3d targetPos = pos.toCenterPos();
+            float[] angles = calculateLookAt(eyePos, targetPos);
+            lookAt(angles[0], angles[1]);
         });
     }
 
     /**
-     * 点击按键（按下+延迟+释放，模拟真人点击）
+     * 直接看向指定实体
      */
-    public CompletableFuture<Void> clickKey(KeyBinding key, int pressTimeMs) {
-        return pressKey(key).thenRunAsync(() -> {
-            try {
-                Thread.sleep(pressTimeMs);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }, Executors.newSingleThreadExecutor()).thenCompose(v -> releaseKey(key));
+    public CompletableFuture<Void> lookAt(Entity entity) {
+        return runOnMainThread(() -> {
+            ClientPlayerEntity player = client.player;
+            if (player == null) return;
+            Vec3d eyePos = player.getEyePos();
+            Vec3d targetPos = entity.getEyePos();
+            float[] angles = calculateLookAt(eyePos, targetPos);
+            lookAt(angles[0], angles[1]);
+        });
     }
 
     /**
-     * 点击按键（默认50ms按下时间，真人点击速度）
+     * 相对转动视角
      */
-    public CompletableFuture<Void> clickKey(KeyBinding key) {
-        return clickKey(key, 50);
-    }
-
-    /**
-     * 移动鼠标（相对转动视角）
-     * @param deltaYaw 水平转动量
-     * @param deltaPitch 垂直转动量
-     */
-    public CompletableFuture<Void> mouseMove(float deltaYaw, float deltaPitch) {
+    public CompletableFuture<Void> turn(float deltaYaw, float deltaPitch) {
         return runOnMainThread(() -> {
             ClientPlayerEntity player = client.player;
             if (player == null) return;
@@ -108,166 +120,19 @@ public class ActionController {
         });
     }
 
-    /**
-     * 按下鼠标左键
-     */
-    public CompletableFuture<Void> pressLeftClick() {
-        return pressKey(client.options.attackKey);
-    }
+    // ==================== 移动控制（直接设置输入，高效） ====================
 
     /**
-     * 释放鼠标左键
-     */
-    public CompletableFuture<Void> releaseLeftClick() {
-        return releaseKey(client.options.attackKey);
-    }
-
-    /**
-     * 点击鼠标左键
-     */
-    public CompletableFuture<Void> clickLeft() {
-        return clickKey(client.options.attackKey);
-    }
-
-    /**
-     * 按下鼠标右键
-     */
-    public CompletableFuture<Void> pressRightClick() {
-        return pressKey(client.options.useKey);
-    }
-
-    /**
-     * 释放鼠标右键
-     */
-    public CompletableFuture<Void> releaseRightClick() {
-        return releaseKey(client.options.useKey);
-    }
-
-    /**
-     * 点击鼠标右键
-     */
-    public CompletableFuture<Void> clickRight() {
-        return clickKey(client.options.useKey);
-    }
-
-    // ==================== 状态查询（线程安全） ====================
-
-    public boolean isMining() {
-        return isMining;
-    }
-
-    public BlockPos getMiningTarget() {
-        return miningTarget;
-    }
-
-    public float getCurrentYaw() {
-        ClientPlayerEntity player = client.player;
-        return player != null ? player.getYaw() : 0;
-    }
-
-    public float getCurrentPitch() {
-        ClientPlayerEntity player = client.player;
-        return player != null ? player.getPitch() : 0;
-    }
-
-    public int getSelectedHotbarSlot() {
-        ClientPlayerEntity player = client.player;
-        return player != null ? player.getInventory().selectedSlot : 0;
-    }
-
-    // ==================== 高层原子动作 ====================
-
-    /**
-     * 平滑看向指定角度（模拟真人转动鼠标，不是瞬间转过去）
-     * @param yaw 目标水平角度
-     * @param pitch 目标垂直角度
-     */
-    public CompletableFuture<Void> lookAt(float yaw, float pitch) {
-        return runOnMainThread(() -> {
-            this.targetYaw = yaw;
-            this.targetPitch = MathHelper.clamp(pitch, -90f, 90f);
-            this.smoothLooking = true;
-        });
-    }
-
-    /**
-     * 看向指定方块位置
-     */
-    public CompletableFuture<Void> lookAt(BlockPos pos) {
-        ClientPlayerEntity player = client.player;
-        if (player == null) return CompletableFuture.completedFuture(null);
-        Vec3d eyePos = player.getEyePos();
-        Vec3d targetPos = pos.toCenterPos();
-        double dx = targetPos.x - eyePos.x;
-        double dy = targetPos.y - eyePos.y;
-        double dz = targetPos.z - eyePos.z;
-        double dHorizontal = Math.sqrt(dx * dx + dz * dz);
-        float yaw = (float) (MathHelper.atan2(dz, dx) * 180 / Math.PI) - 90f;
-        float pitch = (float) -(MathHelper.atan2(dy, dHorizontal) * 180 / Math.PI);
-        return lookAt(yaw, pitch);
-    }
-
-    /**
-     * 看向指定实体
-     */
-    public CompletableFuture<Void> lookAt(Entity entity) {
-        return lookAt(entity.getBlockPos());
-    }
-
-    /**
-     * 停止平滑看向
-     */
-    public CompletableFuture<Void> stopLooking() {
-        return runOnMainThread(() -> smoothLooking = false);
-    }
-
-    /**
-     * 设置移动状态
-     * @param forward 前后移动：-1=后退，0=不动，1=前进
-     * @param strafe 左右移动：-1=左，0=不动，1=右
+     * 设置移动输入
+     * @param forward 前后：-1=后退，0=停，1=前进
+     * @param strafe 左右：-1=右，0=停，1=左（Minecraft输入坐标系是反的）
      */
     public CompletableFuture<Void> setMovement(float forward, float strafe) {
         return runOnMainThread(() -> {
-            KeyBinding forwardKey = client.options.forwardKey;
-            KeyBinding backKey = client.options.backKey;
-            KeyBinding leftKey = client.options.leftKey;
-            KeyBinding rightKey = client.options.rightKey;
-
-            // 前后
-            if (forward > 0.1f) {
-                KeyBinding.setKeyPressed(forwardKey.getDefaultKey(), true);
-                forwardKey.setPressed(true);
-                KeyBinding.setKeyPressed(backKey.getDefaultKey(), false);
-                backKey.setPressed(false);
-            } else if (forward < -0.1f) {
-                KeyBinding.setKeyPressed(backKey.getDefaultKey(), true);
-                backKey.setPressed(true);
-                KeyBinding.setKeyPressed(forwardKey.getDefaultKey(), false);
-                forwardKey.setPressed(false);
-            } else {
-                KeyBinding.setKeyPressed(forwardKey.getDefaultKey(), false);
-                forwardKey.setPressed(false);
-                KeyBinding.setKeyPressed(backKey.getDefaultKey(), false);
-                backKey.setPressed(false);
-            }
-
-            // 左右
-            if (strafe > 0.1f) {
-                KeyBinding.setKeyPressed(leftKey.getDefaultKey(), true);
-                leftKey.setPressed(true);
-                KeyBinding.setKeyPressed(rightKey.getDefaultKey(), false);
-                rightKey.setPressed(false);
-            } else if (strafe < -0.1f) {
-                KeyBinding.setKeyPressed(rightKey.getDefaultKey(), true);
-                rightKey.setPressed(true);
-                KeyBinding.setKeyPressed(leftKey.getDefaultKey(), false);
-                leftKey.setPressed(false);
-            } else {
-                KeyBinding.setKeyPressed(leftKey.getDefaultKey(), false);
-                leftKey.setPressed(false);
-                KeyBinding.setKeyPressed(rightKey.getDefaultKey(), false);
-                rightKey.setPressed(false);
-            }
+            ClientPlayerEntity player = client.player;
+            if (player == null) return;
+            player.input.movementForward = forward;
+            player.input.movementSideways = strafe;
         });
     }
 
@@ -279,80 +144,109 @@ public class ActionController {
     }
 
     /**
-     * 开始蹲下（Shift）
-     */
-    public CompletableFuture<Void> startSneak() {
-        return pressKey(client.options.sneakKey);
-    }
-
-    /**
-     * 停止蹲下
-     */
-    public CompletableFuture<Void> stopSneak() {
-        return releaseKey(client.options.sneakKey);
-    }
-
-    /**
      * 设置蹲下状态
      */
     public CompletableFuture<Void> setSneak(boolean sneak) {
-        return sneak ? startSneak() : stopSneak();
-    }
-
-    /**
-     * 开始疾跑（Ctrl）
-     */
-    public CompletableFuture<Void> startSprint() {
         return runOnMainThread(() -> {
             ClientPlayerEntity player = client.player;
-            if (player != null) {
-                player.setSprinting(true);
-            }
-            pressKey(client.options.sprintKey);
+            if (player == null) return;
+            player.setSneaking(sneak);
         });
     }
 
-    /**
-     * 停止疾跑
-     */
-    public CompletableFuture<Void> stopSprint() {
-        return runOnMainThread(() -> {
-            ClientPlayerEntity player = client.player;
-            if (player != null) {
-                player.setSprinting(false);
-            }
-            releaseKey(client.options.sprintKey);
-        });
-    }
+    public CompletableFuture<Void> startSneak() { return setSneak(true); }
+    public CompletableFuture<Void> stopSneak() { return setSneak(false); }
 
     /**
      * 设置疾跑状态
      */
     public CompletableFuture<Void> setSprint(boolean sprint) {
-        return sprint ? startSprint() : stopSprint();
+        return runOnMainThread(() -> {
+            ClientPlayerEntity player = client.player;
+            if (player == null) return;
+            player.setSprinting(sprint);
+        });
     }
 
+    public CompletableFuture<Void> startSprint() { return setSprint(true); }
+    public CompletableFuture<Void> stopSprint() { return setSprint(false); }
+
     /**
-     * 跳跃一次（点击空格）
+     * 跳跃一次
      */
     public CompletableFuture<Void> jump() {
-        return clickKey(client.options.jumpKey);
+        return runOnMainThread(() -> {
+            ClientPlayerEntity player = client.player;
+            if (player == null) return;
+            player.jump();
+        });
     }
 
     /**
-     * 开始挖掘指定方块
-     * 自动看向方块，按住左键直到方块破坏
-     * @param pos 要挖掘的方块位置
+     * 设置跳跃状态（持续跳，比如游泳/搭路）
+     */
+    public CompletableFuture<Void> setJumping(boolean jumping) {
+        return runOnMainThread(() -> {
+            ClientPlayerEntity player = client.player;
+            if (player == null) return;
+            if (jumping) {
+                player.jump();
+            }
+        });
+    }
+
+    // ==================== 世界交互（直接调用游戏API，不用模拟按键） ====================
+
+    /**
+     * 开始挖掘方块（直接调用游戏挖掘逻辑，自动对准）
      */
     public CompletableFuture<Void> startMining(BlockPos pos) {
         return runOnMainThread(() -> {
-            if (isMining) {
-                releaseLeftClick();
-            }
+            ClientPlayerEntity player = client.player;
+            ClientPlayerInteractionManager interactionManager = client.interactionManager;
+            if (player == null || interactionManager == null) return;
+
+            // 先对准方块
+            lookAt(pos).join();
             this.isMining = true;
             this.miningTarget = pos;
-            lookAt(pos);
-            pressLeftClick();
+
+            // 直接调用游戏挖掘
+            Direction side = Direction.UP;
+            BlockHitResult hitResult = new BlockHitResult(pos.toCenterPos(), side, pos, false);
+            interactionManager.attackBlock(pos, side);
+            player.swingHand(Hand.MAIN_HAND);
+        });
+    }
+
+    /**
+     * 持续挖掘（每tick调用，保持挖掘进度）
+     */
+    private void tickMining() {
+        if (!isMining || miningTarget == null) return;
+        ClientPlayerInteractionManager interactionManager = client.interactionManager;
+        if (interactionManager == null) return;
+
+        // 持续挖掘
+        interactionManager.updateBlockBreakingProgress(miningTarget, Direction.UP);
+        client.player.swingHand(Hand.MAIN_HAND);
+
+        // 挖完了自动停止
+        if (client.world.isAir(miningTarget)) {
+            stopMining();
+        }
+    }
+
+    /**
+     * 立即破坏方块（创造模式用）
+     */
+    public CompletableFuture<Void> breakBlockInstantly(BlockPos pos) {
+        return runOnMainThread(() -> {
+            ClientPlayerInteractionManager interactionManager = client.interactionManager;
+            if (interactionManager == null) return;
+            interactionManager.breakBlock(pos);
+            isMining = false;
+            miningTarget = null;
         });
     }
 
@@ -361,161 +255,203 @@ public class ActionController {
      */
     public CompletableFuture<Void> stopMining() {
         return runOnMainThread(() -> {
+            ClientPlayerInteractionManager interactionManager = client.interactionManager;
+            if (interactionManager != null) {
+                interactionManager.cancelBlockBreaking();
+            }
             this.isMining = false;
             this.miningTarget = null;
-            releaseLeftClick();
         });
     }
 
     /**
-     * 丢弃当前手持物品一个（按Q）
+     * 在指定位置放置方块（主手）
+     * @param pos 要放置的方块位置
+     * @param side 放置面
      */
-    public CompletableFuture<Void> dropItem() {
-        return clickKey(client.options.dropKey);
-    }
-
-    /**
-     * 丢弃当前手持整组物品（Ctrl+Q）
-     */
-    public CompletableFuture<Void> dropAllItem() {
+    public CompletableFuture<Void> placeBlock(BlockPos pos, Direction side) {
         return runOnMainThread(() -> {
-            KeyBinding.setKeyPressed(InputUtil.fromKeyCode(GLFW.GLFW_KEY_LEFT_CONTROL, 0), true);
-            clickKey(client.options.dropKey, 50);
-            KeyBinding.setKeyPressed(InputUtil.fromKeyCode(GLFW.GLFW_KEY_LEFT_CONTROL, 0), false);
+            ClientPlayerEntity player = client.player;
+            ClientPlayerInteractionManager interactionManager = client.interactionManager;
+            if (player == null || interactionManager == null) return;
+
+            // 看向放置位置
+            Vec3d hitPos = pos.toCenterPos().add(Vec3d.of(side.getVector()).multiply(0.5d));
+            float[] angles = calculateLookAt(player.getEyePos(), hitPos);
+            lookAt(angles[0], angles[1]).join();
+
+            // 直接交互放置
+            BlockHitResult hitResult = new BlockHitResult(hitPos, side, pos, false);
+            interactionManager.interactBlock(player, Hand.MAIN_HAND, hitResult);
+            player.swingHand(Hand.MAIN_HAND);
         });
     }
+
+    /**
+     * 放置方块（自动选择放置面）
+     */
+    public CompletableFuture<Void> placeBlock(BlockPos pos) {
+        return placeBlock(pos, Direction.UP);
+    }
+
+    /**
+     * 右键交互方块（开门、开箱子、和村民交易等）
+     */
+    public CompletableFuture<Void> interactBlock(BlockPos pos, Direction side) {
+        return runOnMainThread(() -> {
+            ClientPlayerEntity player = client.player;
+            ClientPlayerInteractionManager interactionManager = client.interactionManager;
+            if (player == null || interactionManager == null) return;
+
+            BlockHitResult hitResult = new BlockHitResult(pos.toCenterPos(), side, pos, false);
+            interactionManager.interactBlock(player, Hand.MAIN_HAND, hitResult);
+        });
+    }
+
+    /**
+     * 攻击实体
+     */
+    public CompletableFuture<Void> attackEntity(Entity entity) {
+        return runOnMainThread(() -> {
+            ClientPlayerEntity player = client.player;
+            ClientPlayerInteractionManager interactionManager = client.interactionManager;
+            if (player == null || interactionManager == null) return;
+
+            lookAt(entity).join();
+            interactionManager.attackEntity(player, entity);
+            player.swingHand(Hand.MAIN_HAND);
+        });
+    }
+
+    /**
+     * 使用主手物品（右键，吃东西、喝药水、拉弓等）
+     */
+    public CompletableFuture<Void> useItem() {
+        return runOnMainThread(() -> {
+            ClientPlayerEntity player = client.player;
+            ClientPlayerInteractionManager interactionManager = client.interactionManager;
+            if (player == null || interactionManager == null) return;
+            interactionManager.interactItem(player, Hand.MAIN_HAND);
+        });
+    }
+
+    /**
+     * 使用副手物品
+     */
+    public CompletableFuture<Void> useOffhandItem() {
+        return runOnMainThread(() -> {
+            ClientPlayerEntity player = client.player;
+            ClientPlayerInteractionManager interactionManager = client.interactionManager;
+            if (player == null || interactionManager == null) return;
+            interactionManager.interactItem(player, Hand.OFF_HAND);
+        });
+    }
+
+    // ==================== 物品操作（直接操作背包，不用模拟按键） ====================
 
     /**
      * 切换到指定快捷栏槽位
-     * @param slot 槽位 0-8 对应 1-9 键
+     * @param slot 0-8
      */
     public CompletableFuture<Void> selectHotbarSlot(int slot) {
-        final int finalSlot = MathHelper.clamp(slot, 0, 8);
         return runOnMainThread(() -> {
             ClientPlayerEntity player = client.player;
-            if (player != null) {
-                player.getInventory().selectedSlot = finalSlot;
-            }
-            // 模拟按数字键
-            KeyBinding key = client.options.hotbarKeys[finalSlot];
-            clickKey(key);
+            if (player == null) return;
+            player.getInventory().selectedSlot = MathHelper.clamp(slot, 0, 8);
         });
     }
 
     /**
-     * 交换主副手物品（按F）
+     * 交换主副手物品
      */
     public CompletableFuture<Void> swapHands() {
-        return clickKey(client.options.swapHandsKey);
-    }
-
-    /**
-     * 打开背包（按E）
-     */
-    public CompletableFuture<Void> openInventory() {
-        return clickKey(client.options.inventoryKey);
-    }
-
-    /**
-     * 关闭当前界面（按ESC）
-     */
-    public CompletableFuture<Void> closeScreen() {
         return runOnMainThread(() -> {
-            if (client.currentScreen != null) {
-                client.currentScreen.close();
-            }
-            pressKey(client.options.inventoryKey); // ESC和E都可以关闭界面
-            releaseKey(client.options.inventoryKey);
+            ClientPlayerEntity player = client.player;
+            if (player == null) return;
+            ItemStack mainHand = player.getMainHandStack();
+            ItemStack offHand = player.getOffHandStack();
+            player.setStackInHand(Hand.MAIN_HAND, offHand);
+            player.setStackInHand(Hand.OFF_HAND, mainHand);
         });
     }
 
     /**
-     * 使用物品/放置方块/右键交互（点击右键）
+     * 丢弃当前主手物品一个
      */
-    public CompletableFuture<Void> useItem() {
-        return clickRight();
+    public CompletableFuture<Void> dropItem() {
+        return runOnMainThread(() -> {
+            ClientPlayerEntity player = client.player;
+            if (player == null) return;
+            player.dropSelectedItem(false);
+        });
     }
 
     /**
-     * 持续使用物品（按住右键，比如吃东西、拉弓、格挡）
+     * 丢弃当前主手整组物品
      */
-    public CompletableFuture<Void> startUsingItem() {
-        return pressRightClick();
+    public CompletableFuture<Void> dropAllItem() {
+        return runOnMainThread(() -> {
+            ClientPlayerEntity player = client.player;
+            if (player == null) return;
+            player.dropSelectedItem(true);
+        });
     }
 
     /**
-     * 停止使用物品
+     * 看向掉落物（走到碰撞箱自动拾取，移动由大脑层控制）
      */
-    public CompletableFuture<Void> stopUsingItem() {
-        return releaseRightClick();
+    public CompletableFuture<Void> lookAtItem(ItemEntity itemEntity) {
+        return lookAt(itemEntity);
     }
 
     /**
-     * 攻击实体（左键点击一次）
+     * 背包物品转移：把背包槽位物品移到快捷栏
      */
-    public CompletableFuture<Void> attack() {
-        return clickLeft();
+    public CompletableFuture<Void> moveToHotbar(int inventorySlot, int hotbarSlot) {
+        return runOnMainThread(() -> {
+            ClientPlayerEntity player = client.player;
+            if (player == null) return;
+            ItemStack stack = player.getInventory().getStack(inventorySlot);
+            player.getInventory().setStack(hotbarSlot, stack);
+            player.getInventory().setStack(inventorySlot, ItemStack.EMPTY);
+        });
     }
 
-    // ==================== 帧更新方法，每tick调用一次，处理平滑动作 ====================
+    // ==================== 状态查询 ====================
+
+    public boolean isMining() { return isMining; }
+    public BlockPos getMiningTarget() { return miningTarget; }
+    public float getYaw() { return client.player != null ? client.player.getYaw() : 0; }
+    public float getPitch() { return client.player != null ? client.player.getPitch() : 0; }
+    public int getSelectedSlot() { return client.player != null ? client.player.getInventory().selectedSlot : 0; }
+    public ItemStack getMainHandStack() { return client.player != null ? client.player.getMainHandStack() : ItemStack.EMPTY; }
+    public boolean isOnGround() { return client.player != null && client.player.isOnGround(); }
+
+    // ==================== 帧更新 ====================
 
     /**
-     * 每客户端tick调用，处理平滑视角转动等持续动作
-     * 由Mixins或者Tick事件自动调用
+     * 每tick调用，处理持续动作
      */
     public void tick() {
         ClientPlayerEntity player = client.player;
         if (player == null) return;
 
-        // 平滑视角转动
-        if (smoothLooking) {
-            float currentYaw = player.getYaw();
-            float currentPitch = player.getPitch();
-
-            float deltaYaw = MathHelper.wrapDegrees(targetYaw - currentYaw);
-            float deltaPitch = targetPitch - currentPitch;
-
-            // 每tick最多转LOOK_SPEED度，模拟真人鼠标速度
-            deltaYaw = MathHelper.clamp(deltaYaw, -LOOK_SPEED, LOOK_SPEED);
-            deltaPitch = MathHelper.clamp(deltaPitch, -LOOK_SPEED, LOOK_SPEED);
-
-            player.setYaw(currentYaw + deltaYaw);
-            player.setPitch(currentPitch + deltaPitch);
-
-            // 到达目标角度后停止
-            if (Math.abs(deltaYaw) < 0.1f && Math.abs(deltaPitch) < 0.1f) {
-                smoothLooking = false;
-                player.setYaw(targetYaw);
-                player.setPitch(targetPitch);
-            }
-        }
-
-        // 检查挖掘是否完成
-        if (isMining && miningTarget != null) {
-            // 如果方块已经被破坏，停止挖掘
-            if (client.world != null && client.world.isAir(miningTarget)) {
-                isMining = false;
-                miningTarget = null;
-                releaseLeftClick();
-            }
+        // 持续挖掘
+        if (isMining) {
+            tickMining();
         }
     }
 
     /**
-     * 重置所有动作状态，停止所有按键
+     * 重置所有动作
      */
     public CompletableFuture<Void> resetAll() {
         return runOnMainThread(() -> {
             stopMovement();
-            stopSneak();
-            stopSprint();
             stopMining();
-            stopLooking();
-            releaseLeftClick();
-            releaseRightClick();
-            isMining = false;
-            miningTarget = null;
-            smoothLooking = false;
+            setSneak(false);
+            setSprint(false);
+            setJumping(false);
         });
     }
 }

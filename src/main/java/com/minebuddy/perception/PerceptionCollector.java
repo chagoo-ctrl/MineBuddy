@@ -13,8 +13,8 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.LightType;
 import net.minecraft.world.World;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -25,9 +25,9 @@ public class PerceptionCollector {
     private static final PerceptionCollector INSTANCE = new PerceptionCollector();
 
     // 每帧临时缓冲区，帧开始时清空，渲染过程中填充
-    private final List<PerceptionSnapshot.VisibleBlock> blockBuffer = new CopyOnWriteArrayList<>();
-    private final List<PerceptionSnapshot.VisibleEntity> entityBuffer = new CopyOnWriteArrayList<>();
-    private final List<PerceptionSnapshot.VisibleItem> itemBuffer = new CopyOnWriteArrayList<>();
+    private final Map<BlockPos, PerceptionSnapshot.VisibleBlock> blockBuffer = new ConcurrentHashMap<>();
+    private final Map<Integer, PerceptionSnapshot.VisibleEntity> entityBuffer = new ConcurrentHashMap<>();
+    private final Map<Integer, PerceptionSnapshot.VisibleItem> itemBuffer = new ConcurrentHashMap<>();
 
     // 最新的感知快照
     private volatile PerceptionSnapshot latestSnapshot;
@@ -51,10 +51,12 @@ public class PerceptionCollector {
 
     /**
      * 添加一个正在渲染的方块（由Mixin调用）
+     * 自动去重：同一个方块多面渲染只记录一次
      */
     public void addBlock(BlockPos pos, BlockState state) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
+        if (blockBuffer.containsKey(pos)) return; // 已记录过，跳过
 
         Vec3d eyePos = client.player.getEyePos();
         double distance = Math.sqrt(pos.getSquaredDistance(eyePos));
@@ -63,7 +65,7 @@ public class PerceptionCollector {
         // 简单计算可见面数量（后面可以优化）
         int visibleFaces = 1;
 
-        blockBuffer.add(new PerceptionSnapshot.VisibleBlock(
+        blockBuffer.put(pos, new PerceptionSnapshot.VisibleBlock(
                 blockId,
                 pos.getX(), pos.getY(), pos.getZ(),
                 Math.round(distance * 100.0) / 100.0,
@@ -74,6 +76,7 @@ public class PerceptionCollector {
 
     /**
      * 添加一个正在渲染的实体（由Mixin调用）
+     * 自动去重：同一个实体多次渲染只记录一次
      */
     public void addEntity(Entity entity) {
         MinecraftClient client = MinecraftClient.getInstance();
@@ -86,9 +89,10 @@ public class PerceptionCollector {
 
         // 掉落物单独处理
         if (entity instanceof ItemEntity itemEntity) {
+            if (itemBuffer.containsKey(entity.getId())) return;
             ItemStack stack = itemEntity.getStack();
             String itemId = Registries.ITEM.getId(stack.getItem()).toString();
-            itemBuffer.add(new PerceptionSnapshot.VisibleItem(
+            itemBuffer.put(entity.getId(), new PerceptionSnapshot.VisibleItem(
                     entity.getId(),
                     itemId,
                     entity.getX(), entity.getY(), entity.getZ(),
@@ -98,6 +102,8 @@ public class PerceptionCollector {
             ));
             return;
         }
+
+        if (entityBuffer.containsKey(entity.getId())) return;
 
         // 普通实体
         float hp = 0, maxHp = 0;
@@ -110,7 +116,7 @@ public class PerceptionCollector {
             isBaby = living.isBaby();
         }
 
-        entityBuffer.add(new PerceptionSnapshot.VisibleEntity(
+        entityBuffer.put(entity.getId(), new PerceptionSnapshot.VisibleEntity(
                 entity.getId(),
                 entityType,
                 entity.getX(), entity.getY(), entity.getZ(),
@@ -207,9 +213,9 @@ public class PerceptionCollector {
                 self,
                 hand,
                 inventory,
-                new ArrayList<>(blockBuffer),
-                new ArrayList<>(entityBuffer),
-                new ArrayList<>(itemBuffer),
+                new ArrayList<>(blockBuffer.values()),
+                new ArrayList<>(entityBuffer.values()),
+                new ArrayList<>(itemBuffer.values()),
                 worldState,
                 gameState
         );
